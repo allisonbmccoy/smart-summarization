@@ -1,0 +1,376 @@
+<!DOCTYPE html> 
+<html> 
+<head>
+	<title>Got Diabetes?</title> 
+  <link href="assets/css/bootstrap.css" rel="stylesheet">
+  <style>
+  	body {
+	  	padding-top: 30px; /* 60px to make the container go all the way to the bottom of the topbar */
+	}
+	.sidebar-nav {
+		padding: 9px 0;
+	}
+    </style>
+    <link href="assets/css/bootstrap-responsive.css" rel="stylesheet">
+</head> 
+<body> 
+	<script src="http://sandbox-dev.smartplatforms.org:8001/framework/smart/scripts/smart-api-client.js"></script>
+	<script type="text/javascript" src="https://www.google.com/jsapi"></script>
+	<script type="text/javascript">
+		google.load('visualization', '1', {'packages':['corechart']});
+		//google.load('visualization', '1.1', {'packages':['corechart']});
+	  google.setOnLoadCallback(summary_go);
+
+		function show_summary(problem) {
+			var lists = document.getElementsByClassName("problemlist");
+			for (i = 0; i < lists.length; i++) {
+				lists[i].className = "problemlist";
+			}
+			document.getElementById(problem + "-list").className = "active problemlist";
+
+			var summaries = document.getElementsByClassName("problemsummary");
+			for (i = 0; i < summaries.length; i++) {
+				summaries[i].className = "hidden problemsummary";
+			}
+			document.getElementById(problem + "-summary").className = "problemsummary";
+		}
+
+		function toggle(div) {
+			var e = document.getElementById(div);
+			var i = document.getElementById(div + "-icon");
+			if (e.className.match(/\hidden\b/)) {
+				e.className = e.className.replace( /(?:^|\s)hidden(?!\S)/g , '' );
+				if (i) {i.className = "icon-chevron-up";}
+			} else {
+					e.className += " hidden";
+					if (i) {i.className = "icon-chevron-down";}
+			}
+		}
+
+		function drawChart(div, dataTable, options) {
+			var chart = new google.visualization.LineChart(document.getElementById(div));
+			chart.draw(dataTable, options);
+		}
+
+		function summary_go() {
+			SMART.ready(function() {
+		
+			var got = {};
+			var medication_list = new Array();
+			var problem_medications = new Array();
+			var problem_list = new Array();
+
+			SMART.MEDICATIONS_get().success(function(meds) {			
+				var medication = meds.graph
+					.where("?m rdf:type sp:Medication")
+					.where("?m sp:drugName ?dn")
+		   	 	.where("?dn dcterms:title ?drugname")
+					.where("?dn sp:code ?c")
+		      .where("?c dcterms:identifier ?rxcui")
+					.optional("?m sp:startDate ?startdate")
+					.optional("?m sp:endDate ?enddate")
+					.optional("?m sp:instructions ?instructions");
+
+				var found_meds = new Array();
+				medication.each(function() {
+					// hide dupes
+					if ((found_meds.indexOf(this.drugname.value) >= 0) || (this.rxcui.value == '000000')) {
+						return;
+					}
+					
+					found_meds.push(this.drugname.value);
+
+					var medication_text = "<tr>";
+					medication_text += "<td><i class=\"icon-asterisk\"></i> " + this.drugname.value 
+						+ " (" + this.rxcui.value + ")</td>";
+				
+					if (this.instructions !== undefined) {
+						medication_text += "<td>" + this.instructions.value + "</td>";
+					} else {
+						medication_text += "<td>&nbsp;</td>";
+					}
+
+					if (this.startdate !== undefined){				
+						medication_text += "<td>" + this.startdate.value + "</td>";
+					} else {
+						medication_text += "<td>&nbsp;</td>";
+					}				
+					medication_text += "</tr>";
+
+					var xmlhttp;
+					if (window.XMLHttpRequest) {
+						xmlhttp = new XMLHttpRequest();
+					} else {
+						xmlhttp = new ActiveXObject("Microsoft.XMLHTTP");
+					}
+					xmlhttp.open("GET", "summary_functions.php?function=get_problems&scui=" + this.rxcui.value, false);
+					xmlhttp.send();
+
+					var problems = xmlhttp.responseText.split(",");
+
+					//var problems = get_problems(this.rxcui.value);
+					for (var i = 0; i < problems.length; i++) {
+						if (problems[i] in problem_medications) {
+							problem_medications[problems[i]].push(medication_text);
+							problem_medications[problems[i]].sort();
+						} else {
+							problem_medications[problems[i]] = new Array(medication_text);
+						}
+					}
+
+					medication_list.push(medication_text);
+					medication_list.sort();
+				});
+				found_meds.length = 0;
+
+				// this makes sure we get both the meds and problems before we pair them up
+				got.meds = true;
+				summarize();
+			}).error(function(err) {});
+
+			SMART.PROBLEMS_get().success(function(probs) {			
+				var problem_text = "";
+				var problem = probs.graph
+					.where("?p rdf:type sp:Problem")
+					.where("?p sp:problemName ?pn")
+					.where("?pn dcterms:title ?title")
+					.where("?pn sp:code ?c")
+					.where("?c dcterms:identifier ?concept")
+					.optional("?p sp:onset ?onset")		
+					.optional("?p sp:resolution ?resolution")
+					.optional("?p sp:notes ?notes");
+
+				var found_problems = new Array();
+				problem.each(function() {
+					// hide dupes and unknown codes
+					if ((found_problems.indexOf(this.title.value) >= 0) || (this.concept.value == '6435014')) {
+						return;
+					} 
+
+					found_problems.push(this.title.value);
+					problem_list.push(this);
+				});
+				found_problems.length = 0;
+				problem_list.sort(function(a,b) {return a.title.value < b.title.value ? -1 : 1});
+
+				// this makes sure we get both the meds and problems before we pair them up
+				got.problems = true;
+				summarize();		
+			}).error(function(err) {});
+
+			var summarize = function() {
+				if (!(got.meds && got.problems)) return;
+
+				var summary_text = "<table class=\"table table-condensed\"><thead><tr><th>Name</th><th>Instructions</th><th>Date</th></tr></thead>";
+
+				for (var i = 0; i < problem_list.length; i++) {
+					var listclass = "problemlist";
+					var summaryclass = " hide problemsummary";
+					if (i === 0) {
+									listclass = "active problemlist";
+									summaryclass = "problemsummary";
+					}
+					
+					document.getElementById("problem-list").innerHTML += 
+						"<li class=\"" + listclass + "\"  id=\"" + problem_list[i].title.value + "-list\">"
+						+ "<a onclick=\"show_summary('" + problem_list[i].title.value + "');\">"
+						+ problem_list[i].title.value + "</a></li>";
+	
+					summary_text += "<tbody class=\"" + summaryclass + "\" id=\"" + problem_list[i].title.value + "-summary\">"
+						+ "<tr><td colspan=\"3\" style=\"background-color: #f9f9f9\">" 
+						+ problem_list[i].title.value + " (" + problem_list[i].concept.value + ")</td></tr>";
+
+					if (problem_list[i].concept.value in problem_medications) {
+						summary_text += problem_medications[problem_list[i].concept.value].join("");
+					} else {
+									summary_text += "<tr><td colspan=\"3\"><em>No relevant medications</em></td><tr>";
+					}	
+					summary_text += "</tbody>";
+				}
+				problem_medications.length = 0;
+				problem_list.length = 0;
+			
+				summary_text += "<thead onclick=\"toggle('all-meds');\">"
+								+ "<tr><td colspan=\"3\" style=\"background-color: #f9f9f9\">"
+								+ "<i class=\"icon-chevron-down\" id=\"all-meds-icon\"></i> All Medications</td></tr>"
+								+ "</thead><tbody class=\"hidden\" id=\"all-meds\">";
+
+				if (medication_list.length == 0) {
+								summary_text += "<tr><td><em>No Medications</em></td></tr>";
+				} else {
+					for (var i = 0; i < medication_list.length; i++) {
+						summary_text += medication_list[i];
+					}
+				}
+				medication_list.length = 0;
+
+				summary_text += "</tbody></table>";
+
+				document.getElementById("medication-list").innerHTML += summary_text;
+			}
+	
+		
+			SMART.LAB_RESULTS_get().success(function(labs) { // only works for quantitative results right now
+				var nresult = labs.graph
+					.where("?r rdf:type sp:LabResult")
+					.where("?r sp:labName ?ln")
+					.where("?ln dcterms:title ?title")
+					.where("?ln sp:code ?lc")
+					.where("?lc dcterms:identifier ?loinc")
+					.where("?r sp:specimenCollected ?sc")
+					.where("?sc sp:startDate ?dt")
+					.where("?r sp:narrativeResult ?nr")
+					.where("?nr sp:value ?nvalue");
+
+				var qresult = labs.graph
+					.where("?r rdf:type sp:LabResult")
+					.where("?r sp:labName ?ln")
+					.where("?ln dcterms:title ?title")
+					.where("?ln sp:code ?lc")
+					.where("?lc dcterms:identifier ?loinc")
+					.where("?r sp:specimenCollected ?sc")
+					.where("?sc sp:startDate ?dt")
+					.where("?r sp:quantitativeResult ?qr")
+					.where("?qr sp:valueAndUnit ?vau")
+					.where("?vau sp:value ?qvalue")
+					.where("?vau sp:unit ?unit")
+					/*.optional("?qr sp:normalRange ?normal")
+					.optional("?normal sp:minimum ?min")
+					.optional("?min sp:value ?minval")
+					.optional("?normal sp:maximum ?max")
+					.optional("?max sp:value ?maxval")*/;
+					
+				var result = qresult.add(nresult);
+				var lab_values = new Object();
+				//var minDate = "9999-99-99";
+				//var maxDate = "0000-00-00";
+					
+				result.each(function() {
+					// ignore empty values
+					if ((this.qr) && (isNaN(parseFloat(this.qvalue.value)))) {
+						return;
+					}
+
+					if (!(this.title.value in lab_values)) {
+						lab_values[this.title.value] = new Object();
+						lab_values[this.title.value]['title'] = this.title.value;
+						lab_values[this.title.value]['loinc'] = this.loinc.value;
+						lab_values[this.title.value]['data'] = new Array();
+
+						if (this.qr) {
+							lab_values[this.title.value]['head'] = new Array("Date", this.unit.value, "Min", "Max");
+							lab_values[this.title.value]['type'] = 'quantitative';
+						} else if (this.nr) {
+							lab_values[this.title.value]['type'] = 'narrative';
+						}
+					}
+
+					if (this.qr) {
+						var date_array = this.dt.value.split("-");
+						lab_values[this.title.value]['data'].push(
+							[new Date(date_array[0], date_array[1], date_array[2]),
+							parseFloat(this.qvalue.value)]); //, parseFloat(this.minval.value), parseFloat(this.maxval.value)]);
+						//if (this.dt.value < minDate) { minDate = this.dt.value;}
+						//if (this.dt.value > maxDate) { maxDate = this.dt.value;}
+					} else if (this.nr) {
+						lab_values[this.title.value]['data'].push("<li>" + this.dt.value + " - " + this.nvalue.value + "</li>");
+					}
+				});
+
+				// var min_date_array = minDate.split("-"); // this isn't working
+				// var max_date_array = maxDate.split("-");
+				var lab_keys = Object.keys(lab_values).sort();
+
+				var lab_text = "<ul>";
+				for (var i = 0; i < lab_keys.length; i++) {
+					l = lab_keys[i];
+					lab_text += "<h4 id=\"" + l + "-head\" " + "onclick=\"toggle('" + l + "');\"" + ">"
+						+ "<i class=\"icon-chevron-down\" id=\"" + l + "-icon\"></i> " + l + " (" + lab_values[l]['loinc'] + ")</h4>"
+						+ "<div id=\"" + l + "\" class=\"hidden\"></div>";
+				}
+				document.getElementById("lab-list").innerHTML += lab_text + "</ul>";
+
+				for (var l in lab_values) { 
+					if (lab_values[l]['type'] == 'quantitative') {
+						if (lab_values[l]['data'].length == 1) {
+							document.getElementById(l).innerHTML += "<ul><li>" 
+								+ lab_values[l]['data'][0][0].getFullYear() + "-" + lab_values[l]['data'][0][0].getMonth() + "-" + lab_values[l]['data'][0][0].getDate()
+								+ " - " + lab_values[l]['data'][0][1] + " " + lab_values[l]['head'][1] + "</li></ul>";
+						} else {
+							var dataTable = new google.visualization.DataTable();
+							dataTable.addColumn('date', 'Date');
+							dataTable.addColumn('number', 'Value');
+							//dataTable.addColumn('number', 'Min'); dataTable.addColumn('number', 'Max');
+
+							dataTable.addRows(lab_values[l]['data'].sort(function(a,b) {return a[0] < b[0] ? -1 : 1}));
+							var options = {
+								vAxis: {title: lab_values[l]['head'][1]},
+								/*hAxis: {minValue: new Date(min_date_array[0], min_date_array[1], min_date_array[2]), 
+									maxValue: new Date(max_date_array[0], max_date_array[1], max_date_array[2])},*/
+								legend: {position: 'none'},
+								titlePosition: 'none',
+								height: 100,
+								pointSize: 5
+								//colors: ['blue', 'red', 'red']
+							};
+			
+							document.getElementById(l + "-head").setAttribute("title", l);
+							document.getElementById(l + "-head").setAttribute("dataTable", dataTable.toJSON());
+							document.getElementById(l + "-head").setAttribute("options", JSON.stringify(options));
+							document.getElementById(l + "-head").onclick = function() {
+								var title = this.getAttribute("title");
+								var dataTable = new google.visualization.DataTable(this.getAttribute("dataTable"));
+								var options = JSON.parse(this.getAttribute("options"));
+								toggle(title);
+								if (!(this.hasAttribute("drawn"))) {
+									drawChart(title, dataTable, options);
+									this.setAttribute("drawn", 1);
+								}
+							};
+						}
+					} else if (lab_values[l]['type'] == 'narrative') {
+							document.getElementById(l).innerHTML += "<ul>" + lab_values[l]['data'].sort().join("") + "</ul>";
+					}
+				}
+			}).error(function(err) {});
+	
+			}); // END SMART
+		} // end summary
+	</script> 
+
+	<div class="container-fluid">
+		<div class="row-fluid">
+    	<div class="span3">
+      	<div class="well sidebar-nav">
+        	<ul class="nav nav-list" id="problem-list">
+          	<li class="nav-header">Problems</li>
+					</ul>
+				</div><!--/.well -->
+			</div><!--/span-->
+			<div class="span9">
+				<div class="row-fluid">
+					<div class="span9" id="medication-list">
+						<h3>Medications</h3>
+					</div>
+				</div>
+				<div class="row-fluid">
+					<div class="span12">
+						<h3>Patient Data</h3>
+						<h4 onclick="toggle('lab-list');"><i class="icon-inbox"></i> Results</h4>
+						<div id="lab-list">
+						</div>
+					</div>
+				</div>
+			</div><!--/span-->
+		</div><!--/row-->
+		
+		<hr>
+
+    <footer>
+    	<p>&copy; 2012</p>
+    </footer>
+	</div><!--/.fluid-container-->
+
+</body> 
+</html> 
+

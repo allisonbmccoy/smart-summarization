@@ -1,0 +1,602 @@
+<!DOCTYPE html> 
+<html> 
+<head>
+	<title>Got Diabetes?</title> 
+  <link href="assets/css/bootstrap.css" rel="stylesheet">
+  <style>
+  	body {
+	  	padding-top: 30px; /* 60px to make the container go all the way to the bottom of the topbar */
+	}
+	.sidebar-nav {
+		padding: 9px 0;
+	}
+    </style>
+    <link href="assets/css/bootstrap-responsive.css" rel="stylesheet">
+</head> 
+<body> 
+	<script src="http://sandbox-dev.smartplatforms.org:8001/framework/smart/scripts/smart-api-client.js"></script>
+	<script type="text/javascript" src="https://www.google.com/jsapi"></script>
+	<script type="text/javascript">
+		google.load('visualization', '1', {'packages':['corechart']});
+		//google.load('visualization', '1.1', {'packages':['corechart']});
+	  google.setOnLoadCallback(summary_go);
+
+		function show_summary(problem) {
+			var lists = document.getElementsByClassName("problemlist");
+			for (i = 0; i < lists.length; i++) {
+				lists[i].className = "problemlist";
+			}
+			document.getElementById(problem + "-list").className = "active problemlist";
+
+			var summaries = document.getElementsByClassName("problemsummary");
+			for (i = 0; i < summaries.length; i++) {
+				summaries[i].className = "hidden problemsummary";
+			}
+			document.getElementById(problem + "-summary").className = "problemsummary";
+		}
+
+		function toggle(div) {
+			var e = document.getElementById(div);
+			var i = document.getElementById(div + "-icon");
+			if (e.className.match(/\hidden\b/)) {
+				e.className = e.className.replace( /(?:^|\s)hidden(?!\S)/g , '' );
+				if (i) {i.className = "icon-chevron-up";}
+			} else {
+					e.className += " hidden";
+					if (i) {i.className = "icon-chevron-down";}
+			}
+		}
+
+		function drawChart(div, dataTable, options) {
+			var chart = new google.visualization.LineChart(document.getElementById(div));
+			chart.draw(dataTable, options);
+		}
+
+		function summary_go() {
+			SMART.ready(function() {
+		
+			document.getElementById("patient-information").innerHTML += "<h4>" + SMART.record.full_name + "</h4>";
+
+			var got = {};
+			var medication_list = new Array();
+			var problem_medications = new Array();
+			var problem_list = new Array();
+
+			SMART.get_demographics().success(function(dems) {
+				var demographic= dems.graph
+					.where("?d rdf:type sp:Demographics")
+					.where("?d sp:medicalRecordNumber ?mrn")
+					.where("?mrn dcterms:identifier ?medicalrecordnumber")
+					.where("?d foaf:gender ?gender")
+					.where("?d v:bday ?dob");
+	
+				var demographic_text = "<div class=\"row-fluid\">";
+				demographic.each(function() {
+					demographic_text += "<div class=\"span4\">MRN: " + this.medicalrecordnumber.value + "</div>";
+					demographic_text += "<div class=\"span4\">Gender: " + this.gender.value + "</div>";
+					demographic_text += "<div class=\"span4\">DOB: " + this.dob.value + "</div>";
+				});
+				demographic_text += "</div>";
+				document.getElementById("patient-information").innerHTML += demographic_text;
+			}).error(function(err) {});
+
+			SMART.get_medications().success(function(meds) {			
+				var medication = meds.graph
+					.where("?m rdf:type sp:Medication")
+					.where("?m sp:drugName ?dn")
+		   	 	.where("?dn dcterms:title ?drugname")
+					.where("?dn sp:code ?c")
+		      .where("?c dcterms:identifier ?rxcui")
+					.optional("?m sp:startDate ?startdate")
+					.optional("?m sp:endDate ?enddate")
+					.optional("?m sp:instructions ?instructions");
+
+				var found_meds = new Array();
+				medication.each(function() {
+					// hide dupes
+					if ((found_meds.indexOf(this.drugname.value) >= 0) || (this.rxcui.value == '000000')) {
+						return;
+					}
+					
+					found_meds.push(this.drugname.value);
+
+					var medication_text = "<tr>";
+					medication_text += "<td><i class=\"icon-asterisk\"></i> " + this.drugname.value 
+						+ " (" + this.rxcui.value + ")</td>";
+				
+					if (this.instructions !== undefined) {
+						medication_text += "<td>" + this.instructions.value + "</td>";
+					} else {
+						medication_text += "<td>&nbsp;</td>";
+					}
+
+					if (this.startdate !== undefined){				
+						medication_text += "<td>" + this.startdate.value + "</td>";
+					} else {
+						medication_text += "<td>&nbsp;</td>";
+					}				
+					medication_text += "</tr>";
+
+					var xmlhttp;
+					if (window.XMLHttpRequest) {
+						xmlhttp = new XMLHttpRequest();
+					} else {
+						xmlhttp = new ActiveXObject("Microsoft.XMLHTTP");
+					}
+					xmlhttp.open("GET", "summary_functions.php?function=get_problems&scui=" + this.rxcui.value, false);
+					xmlhttp.send();
+
+					var problems = xmlhttp.responseText.split(",");
+
+					//var problems = get_problems(this.rxcui.value);
+					for (var i = 0; i < problems.length; i++) {
+						if (problems[i] in problem_medications) {
+							problem_medications[problems[i]].push(medication_text);
+							problem_medications[problems[i]].sort();
+						} else {
+							problem_medications[problems[i]] = new Array(medication_text);
+						}
+					}
+
+					medication_list.push(medication_text);
+					medication_list.sort();
+				});
+				found_meds.length = 0;
+
+				// this makes sure we get both the meds and problems before we pair them up
+				got.meds = true;
+				summarize();
+			}).error(function(err) {});
+
+			SMART.get_problems().success(function(probs) {			
+				var problem_text = "";
+				var problem = probs.graph
+					.where("?p rdf:type sp:Problem")
+					.where("?p sp:problemName ?pn")
+					.where("?pn dcterms:title ?title")
+					.where("?pn sp:code ?c")
+					.where("?c dcterms:identifier ?concept")
+					.optional("?p sp:onset ?onset")		
+					.optional("?p sp:resolution ?resolution")
+					.optional("?p sp:notes ?notes");
+
+				var found_problems = new Array();
+				problem.each(function() {
+					// hide dupes and unknown codes
+					if ((found_problems.indexOf(this.title.value) >= 0) || (this.concept.value == '6435014')) {
+						return;
+					} 
+
+					found_problems.push(this.title.value);
+					problem_list.push(this);
+				});
+				found_problems.length = 0;
+				problem_list.sort(function(a,b) {return a.title.value < b.title.value ? -1 : 1});
+
+				// this makes sure we get both the meds and problems before we pair them up
+				got.problems = true;
+				summarize();		
+			}).error(function(err) {});
+
+			var summarize = function() {
+				if (!(got.meds && got.problems)) return;
+
+				var summary_text = "<table class=\"table table-condensed\"><thead><tr><th>Name</th><th>Instructions</th><th>Date</th></tr></thead>";
+
+				for (var i = 0; i < problem_list.length; i++) {
+					var listclass = "problemlist";
+					var summaryclass = " hide problemsummary";
+					if (i === 0) {
+									listclass = "active problemlist";
+									summaryclass = "problemsummary";
+					}
+					
+					document.getElementById("problem-list").innerHTML += 
+						"<li class=\"" + listclass + "\"  id=\"" + problem_list[i].title.value + "-list\">"
+						+ "<a onclick=\"show_summary('" + problem_list[i].title.value + "');\">"
+						+ problem_list[i].title.value + "</a></li>";
+	
+					summary_text += "<tbody class=\"" + summaryclass + "\" id=\"" + problem_list[i].title.value + "-summary\">"
+						+ "<tr><td colspan=\"3\" style=\"background-color: #f9f9f9\">" 
+						+ problem_list[i].title.value + " (" + problem_list[i].concept.value + ")</td></tr>";
+
+					if (problem_list[i].concept.value in problem_medications) {
+						summary_text += problem_medications[problem_list[i].concept.value].join("");
+					} else {
+									summary_text += "<tr><td colspan=\"3\"><em>No relevant medications</em></td><tr>";
+					}	
+					summary_text += "</tbody>";
+				}
+				problem_medications.length = 0;
+				problem_list.length = 0;
+			
+				summary_text += "<thead onclick=\"toggle('all-meds');\">"
+								+ "<tr><td colspan=\"3\" style=\"background-color: #f9f9f9\">"
+								+ "<i class=\"icon-chevron-down\" id=\"all-meds-icon\"></i> All Medications</td></tr>"
+								+ "</thead><tbody class=\"hidden\" id=\"all-meds\">";
+
+				if (medication_list.length == 0) {
+								summary_text += "<tr><td><em>No Medications</em></td></tr>";
+				} else {
+					for (var i = 0; i < medication_list.length; i++) {
+						summary_text += medication_list[i];
+					}
+				}
+				medication_list.length = 0;
+
+				summary_text += "</tbody></table>";
+
+				document.getElementById("medication-list").innerHTML += summary_text;
+			}
+	
+			SMART.get_allergies().success(function(alls) {
+				var allergy = alls.graph
+					.where("?a rdf:type sp:Allergy")
+					.where("?a sp:drugClassAllergen ?dca")
+					.where("?dca dcterms:title ?title");	
+
+					var allergy_list = "";
+					if (allergy.length === 0) {
+						allergy_list = "<em>No Known Allergies</em>";
+					} else {
+						allergy_list = "<ul>";	
+						allergy.each(function() {
+							allergy_list += "<li>" + this.title.value + "</li>";
+						});
+					}
+					allergy_list += "</ul>";
+	
+					document.getElementById("allergy-list").innerHTML += allergy_list;
+			}).error(function(err) {});
+		
+			SMART.get_lab_results().success(function(labs) { // only works for quantitative results right now
+				var nresult = labs.graph
+					.where("?r rdf:type sp:LabResult")
+					.where("?r sp:labName ?ln")
+					.where("?ln dcterms:title ?title")
+					.where("?ln sp:code ?lc")
+					.where("?lc dcterms:identifier ?loinc")
+					/*.where("?r sp:specimenCollected ?sc")
+					  .where("?sc sp:startDate ?dt")*/
+					.where("?r dcterms:date ?dt")
+					.where("?r sp:narrativeResult ?nr")
+					.where("?nr sp:value ?nvalue");
+
+				var qresult = labs.graph
+					.where("?r rdf:type sp:LabResult")
+					.where("?r sp:labName ?ln")
+					.where("?ln dcterms:title ?title")
+					.where("?ln sp:code ?lc")
+					.where("?lc dcterms:identifier ?loinc")
+					/*.where("?r sp:specimenCollected ?sc")
+					  .where("?sc sp:startDate ?dt")*/
+					.where("?r dcterms:date ?dt")
+					.where("?r sp:quantitativeResult ?qr")
+					.where("?qr sp:valueAndUnit ?vau")
+					.where("?vau sp:value ?qvalue")
+					.where("?vau sp:unit ?unit")
+					/*.optional("?qr sp:normalRange ?normal")
+					.optional("?normal sp:minimum ?min")
+					.optional("?min sp:value ?minval")
+					.optional("?normal sp:maximum ?max")
+					.optional("?max sp:value ?maxval")*/;
+					
+				var result = qresult.add(nresult);
+				var lab_values = new Object();
+				//var minDate = "9999-99-99";
+				//var maxDate = "0000-00-00";
+					
+				result.each(function() {
+					// ignore empty values
+					if ((this.qr) && (isNaN(parseFloat(this.qvalue.value)))) {
+						return;
+					}
+
+					if (!(this.title.value in lab_values)) {
+						lab_values[this.title.value] = new Object();
+						lab_values[this.title.value]['title'] = this.title.value;
+						lab_values[this.title.value]['loinc'] = this.loinc.value;
+						lab_values[this.title.value]['data'] = new Array();
+
+						if (this.qr) {
+							lab_values[this.title.value]['head'] = new Array("Date", this.unit.value, "Min", "Max");
+							lab_values[this.title.value]['type'] = 'quantitative';
+						} else if (this.nr) {
+							lab_values[this.title.value]['type'] = 'narrative';
+						}
+					}
+
+					if (this.qr) {
+						var date_array = this.dt.value.split("-");
+						lab_values[this.title.value]['data'].push(
+							[new Date(date_array[0], date_array[1], date_array[2]),
+							parseFloat(this.qvalue.value)]); //, parseFloat(this.minval.value), parseFloat(this.maxval.value)]);
+						//if (this.dt.value < minDate) { minDate = this.dt.value;}
+						//if (this.dt.value > maxDate) { maxDate = this.dt.value;}
+					} else if (this.nr) {
+						lab_values[this.title.value]['data'].push("<li>" + this.dt.value + " - " + this.nvalue.value + "</li>");
+					}
+				});
+
+				// var min_date_array = minDate.split("-"); // this isn't working
+				// var max_date_array = maxDate.split("-");
+				var lab_keys = Object.keys(lab_values).sort();
+
+				var lab_text = "<ul>";
+				for (var i = 0; i < lab_keys.length; i++) {
+					l = lab_keys[i];
+					lab_text += "<h4 id=\"" + l + "-head\" " + "onclick=\"toggle('" + l + "');\"" + ">"
+						+ "<i class=\"icon-chevron-down\" id=\"" + l + "-icon\"></i> " + l + " (" + lab_values[l]['loinc'] + ")</h4>"
+						+ "<div id=\"" + l + "\" class=\"hidden\"></div>";
+				}
+				document.getElementById("lab-list").innerHTML += lab_text + "</ul>";
+
+				for (var l in lab_values) { 
+					if (lab_values[l]['type'] == 'quantitative') {
+						if (lab_values[l]['data'].length == 1) {
+							document.getElementById(l).innerHTML += "<ul><li>" 
+								+ lab_values[l]['data'][0][0].getFullYear() + "-" + lab_values[l]['data'][0][0].getMonth() + "-" + lab_values[l]['data'][0][0].getDate()
+								+ " - " + lab_values[l]['data'][0][1] + " " + lab_values[l]['head'][1] + "</li></ul>";
+						} else {
+							var dataTable = new google.visualization.DataTable();
+							dataTable.addColumn('date', 'Date');
+							dataTable.addColumn('number', 'Value');
+							//dataTable.addColumn('number', 'Min'); dataTable.addColumn('number', 'Max');
+
+							dataTable.addRows(lab_values[l]['data'].sort(function(a,b) {return a[0] < b[0] ? -1 : 1}));
+							var options = {
+								vAxis: {title: lab_values[l]['head'][1]},
+								/*hAxis: {minValue: new Date(min_date_array[0], min_date_array[1], min_date_array[2]), 
+									maxValue: new Date(max_date_array[0], max_date_array[1], max_date_array[2])},*/
+								legend: {position: 'none'},
+								titlePosition: 'none',
+								height: 100,
+								pointSize: 5
+								//colors: ['blue', 'red', 'red']
+							};
+			
+							document.getElementById(l + "-head").setAttribute("title", l);
+							document.getElementById(l + "-head").setAttribute("dataTable", dataTable.toJSON());
+							document.getElementById(l + "-head").setAttribute("options", JSON.stringify(options));
+							document.getElementById(l + "-head").onclick = function() {
+								var title = this.getAttribute("title");
+								var dataTable = new google.visualization.DataTable(this.getAttribute("dataTable"));
+								var options = JSON.parse(this.getAttribute("options"));
+								toggle(title);
+								if (!(this.hasAttribute("drawn"))) {
+									drawChart(title, dataTable, options);
+									this.setAttribute("drawn", 1);
+								}
+							};
+						}
+					} else if (lab_values[l]['type'] == 'narrative') {
+							document.getElementById(l).innerHTML += "<ul>" + lab_values[l]['data'].sort().join("") + "</ul>";
+					}
+				}
+			}).error(function(err) {});
+
+			SMART.get_encounters().success(function(encs) {
+				var encounter = encs.graph
+					.where("?e rdf:type sp:Encounter")
+					.where("?e sp:encounterType ?et")
+					.where("?et dcterms:title ?title")
+					.where("?e sp:startDate ?dt");
+
+					//if (encounter.length === 0) {
+						document.getElementById("encounter-list").innerHTML += "<em>None</em>";
+					/*} else {
+						var encounter_list = new Array();
+						encounter.each(function() {
+							encounter_list.push("<div id=\"" + this.dt.value + "\" onclick=\"toggle('" + this.dt.value + "-vitals');\">"
+								+ "<i class=\"icon-chevron-down\" id=\"" + this.dt.value + "-vitals-icon\"></i> " + this.dt.value + " - " + this.title.value + "</div></li>");
+						});
+
+						document.getElementById("encounter-list").innerHTML += "<ul>" 
+							+ encounter_list.sort().join("") + "</ul>";
+					}*/
+
+					SMART.get_vital_sign_sets().success(function(vitals) {
+						// height
+						var height = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:height ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// weight
+						var weight = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:weight ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// bmi	
+						var bmi = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:bodyMassIndex ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// respiratory rate
+						var rr = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:respiratoryRate ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// heart rate
+						var hr = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:heartRate ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// oxygen saturation
+						var os = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:oxygenSaturation ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// temp
+						var temp = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:temperature ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						// bp - TODO
+						/*vital = vitals.graph
+							.where("?v rdf:type sp:VitalSignSet")
+							.where("?v dcterms:date ?dt")
+							.where("?v sp:bloodPressure ?vv")
+							.where("?vv sp:vitalName ?vn")
+							.where("?vn sp:code ?c")
+							.where("?c dcterms:title ?title")
+							.where("?vv sp:value ?value")
+							.where("?vv sp:unit ?unit");
+
+						.optional("?v sp:bloodPressure ?bp")
+						.optional("?bp sp:systolic ?sysbp")
+						.optional("?sysbp sp:value ?sysbpvalue")
+						.optional("?sysbp sp:unit ?sysbpunit")
+						.optional("?bp sp:diastolic ?diasbp")
+						.optional("?diasbp sp:value ?diasbpvalue")
+						.optional("?diasbp sp:unit ?diasbpunit");*/
+
+						var vital_data =  new Object(); 
+						var vital = height.add(weight.add(bmi.add(rr.add(hr.add(os.add(temp))))));
+								
+						vital.each(function() {
+							if (!(this.title.value in vital_data)) {
+								vital_data[this.title.value] = new Array();
+							}
+							vital_data[this.title.value].push("<li>" + this.dt.value + " - " + this.value.value + " " + this.unit.value + "</li>");						
+						});
+
+						if (vital_data.length === 0) {
+							document.getElementById("vitals-list").innerHTML += "<em>None</em>";
+						} else {
+							var vitals_text = "<ul>";
+							for (v in vital_data) {	
+								vitals_text += "<h4 onclick=\"toggle('" + v + "');\">"
+									+ "<i class=\"icon-chevron-down\" id=\"" + v + "-icon\"></i> " + v + "</h4>"
+									+ "<ul id=\"" + v + "\" class=\"hidden\">" + vital_data[v].sort().join("") + "</ul>";
+							}
+							document.getElementById("vitals-list").innerHTML += vitals_text + "</ul>";
+						}	
+				}).error(function(err) {});
+
+			}).error(function(err) {});
+	
+			SMART.get_immunizations().success(function(imms) {
+				var immunization = imms.graph
+					.where("?i rdf:type sp:Immunization")
+					.where("?i dcterms:date ?dt")
+					.where("?i sp:administrationStatus ?as")
+					.where("?as dcterms:title ?status")
+					.where("?i sp:productName ?pn")
+					.where("?pn dcterms:title ?title");
+
+					if (immunization.length === 0) {
+						document.getElementById("immunization-list").innerHTML += "<em>None</em>";
+					} else {
+						var immunization_list = new Array();
+						immunization.each(function() {
+							immunization_list.push("<li>" + this.dt.value + " - " + this.title.value 
+								+ " (" + this.status.value + ")</li>");
+						});
+
+						document.getElementById("immunization-list").innerHTML += "<ul>" 
+							+ immunization_list.sort().join("") + "</ul>";
+
+					}	
+			}).error(function(err) {});
+
+
+			}); // END SMART
+		} // end summary
+	</script> 
+
+	<div class="container-fluid">
+		<div class="row-fluid">
+			<div class="span6 well" id="patient-information">
+				<h3><i class="icon-user"></i> Patient Information</h3>
+			</div>
+			<div class="span6 well" id="immunization-list">
+				<h3><i class="icon-bell"></i> Immunizations</h3>
+			</div>
+		</div>
+		<div class="row-fluid">
+    	<div class="span3">
+      	<div class="well sidebar-nav">
+        	<ul class="nav nav-list" id="problem-list">
+          	<li class="nav-header">Problems</li>
+					</ul>
+				</div><!--/.well -->
+			</div><!--/span-->
+			<div class="span9">
+				<div class="row-fluid">
+					<div class="span3" id="allergy-list">
+						<h3><i class="icon-warning-sign"></i> Allergies</h3>
+					</div>
+					<div class="span9" id="medication-list">
+						<h3>Medications</h3>
+					</div>
+				</div>
+				<div class="row-fluid">
+					<div class="span12">
+						<h3>Patient Data</h3>
+						<h4 onclick="toggle('lab-list');"><i class="icon-inbox"></i> Results</h4>
+						<div id="lab-list">
+						</div>
+						<h4 onclick="toggle('vitals-list');"><i class="icon-heart"></i> Vital Signs</h4>
+						<div id="vitals-list">
+						</div>
+						<h4 onclick="toggle('encounter-list');"><i class="icon-calendar"></i> Encounters</h4>
+						<div id="encounter-graph"></div>
+						<div id="encounter-list">
+						</div>
+					</div>
+				</div>
+			</div><!--/span-->
+		</div><!--/row-->
+		
+		<hr>
+
+    <footer>
+    	<p>&copy; 2012</p>
+    </footer>
+	</div><!--/.fluid-container-->
+
+</body> 
+</html> 
+
